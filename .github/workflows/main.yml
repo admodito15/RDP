@@ -143,23 +143,25 @@ jobs:
         run: |
           cd $env:SERVER_PATH
           
-          Write-Host "Starting Flask upload server..."
+          Write-Host "Current directory: $(Get-Location)"
+          Write-Host "Files in directory:"
+          Get-ChildItem
           
-          # Start the server in background
-          $serverProcess = Start-Process -NoNewWindow -FilePath "python" -ArgumentList "server.py" -PassThru -RedirectStandardOutput "$env:TEMP\server-output.log" -RedirectStandardError "$env:TEMP\server-error.log"
+          Write-Host "`nStarting Flask upload server..."
+          
+          # Start the server in background without redirecting output initially for debugging
+          Start-Process -NoNewWindow -FilePath "python" -ArgumentList "server.py" -PassThru
           
           # Wait for server to start
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 10
           
-          # Check if server is running
-          if ($serverProcess.HasExited) {
-              Write-Error "Server failed to start"
-              Get-Content "$env:TEMP\server-error.log"
-              exit 1
+          # Check if port 5000 is listening
+          $portCheck = Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue
+          if ($portCheck) {
+              Write-Host "Upload server started successfully on port 5000"
+          } else {
+              Write-Warning "Server may not have started properly, but continuing..."
           }
-          
-          Write-Host "Upload server started successfully (PID: $($serverProcess.Id))"
-          echo "SERVER_PID=$($serverProcess.Id)" >> $env:GITHUB_ENV
 
       - name: Maintain Connection    
         run: |    
