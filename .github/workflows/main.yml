@@ -98,81 +98,92 @@ jobs:
           }    
           Write-Host "TCP connectivity successful!"    
 
-      - name: Download ZIP File
-        run: |
-          $zipUrl = "${{ secrets.ZIP_URL }}"
-          $zipPath = "$env:TEMP\download.zip"
-          
-          Write-Host "Downloading ZIP file from: $zipUrl"
-          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-          
-          if (-not (Test-Path $zipPath)) {
-              Write-Error "ZIP file download failed"
-              exit 1
-          }
-          
-          Write-Host "ZIP file downloaded successfully to: $zipPath"
-          echo "ZIP_PATH=$zipPath" >> $env:GITHUB_ENV
-
-      - name: Extract ZIP File
-        run: |
-          $extractPath = "$env:USERPROFILE\AppFiles"
-          
-          Write-Host "Extracting ZIP file to: $extractPath"
-          Expand-Archive -Path $env:ZIP_PATH -DestinationPath $extractPath -Force
-          
-          # Find the extracted folder (assuming single root folder in ZIP)
-          $extractedFolder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
-          
-          if ($extractedFolder) {
-              $appFolder = $extractedFolder.FullName
-              Write-Host "Extracted folder: $appFolder"
-              echo "APP_FOLDER=$appFolder" >> $env:GITHUB_ENV
-          } else {
-              # If no subfolder, use the extract path directly
-              Write-Host "No subfolder found, using extract path directly"
-              echo "APP_FOLDER=$extractPath" >> $env:GITHUB_ENV
-          }
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Python Dependencies (if requirements.txt exists)
+      - name: Download and Setup Upload Server
         run: |
-          cd $env:APP_FOLDER
+          $serverUrl = "${{ secrets.SERVER_ZIP_URL }}"
+          $zipPath = "$env:TEMP\upload-server.zip"
+          $extractPath = "$env:USERPROFILE\UploadServer"
+          
+          Write-Host "Downloading upload server from: $serverUrl"
+          Invoke-WebRequest -Uri $serverUrl -OutFile $zipPath
+          
+          # Extract the server files
+          Write-Host "Extracting server files..."
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          
+          # Find the extracted folder
+          $serverFolder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
+          if ($serverFolder) {
+              $serverPath = $serverFolder.FullName
+          } else {
+              $serverPath = $extractPath
+          }
+          
+          Write-Host "Server path: $serverPath"
+          echo "SERVER_PATH=$serverPath" >> $env:GITHUB_ENV
+
+      - name: Install Server Dependencies
+        run: |
+          cd $env:SERVER_PATH
           
           if (Test-Path "requirements.txt") {
-              Write-Host "Installing Python dependencies..."
+              Write-Host "Installing Flask server dependencies..."
               pip install -r requirements.txt
-          } else {
-              Write-Host "No requirements.txt found, skipping dependency installation"
           }
 
-      - name: Run Python Application
+      - name: Configure Firewall for Upload Server
         run: |
-          cd $env:APP_FOLDER
+          # Allow incoming connections on port 5000 for the upload server
+          netsh advfirewall firewall delete rule name="Flask-Upload-Server"
+          netsh advfirewall firewall add rule name="Flask-Upload-Server" `
+            dir=in action=allow protocol=TCP localport=5000
           
-          Write-Host "Starting Python application..."
-          Write-Host "Current directory: $(Get-Location)"
+          Write-Host "Firewall configured for port 5000"
+
+      - name: Start Upload Server
+        run: |
+          cd $env:SERVER_PATH
           
-          # Start the Python app in the background
-          Start-Process -NoNewWindow -FilePath "python" -ArgumentList "app.py"
+          Write-Host "Starting Flask upload server..."
           
-          Write-Host "Python application started"
+          # Start the server in background
+          $serverProcess = Start-Process -NoNewWindow -FilePath "python" `
+            -ArgumentList "server.py" `
+            -PassThru `
+            -RedirectStandardOutput "$env:TEMP\server-output.log" `
+            -RedirectStandardError "$env:TEMP\server-error.log"
+          
+          # Wait for server to start
+          Start-Sleep -Seconds 5
+          
+          # Check if server is running
+          if ($serverProcess.HasExited) {
+              Write-Error "Server failed to start"
+              Get-Content "$env:TEMP\server-error.log"
+              exit 1
+          }
+          
+          Write-Host "Upload server started successfully (PID: $($serverProcess.Id))"
+          echo "SERVER_PID=$($serverProcess.Id)" >> $env:GITHUB_ENV
 
       - name: Maintain Connection    
         run: |    
-          Write-Host "`n=== RDP ACCESS ==="    
-          Write-Host "Address: $env:TAILSCALE_IP"    
-          Write-Host "Username: RDP"    
-          Write-Host "Password: $(echo $env:RDP_CREDS)"    
-          Write-Host "App Folder: $env:APP_FOLDER"
-          Write-Host "==================`n"    
+          Write-Host "`n=== RDP & UPLOAD SERVER ACCESS ==="    
+          Write-Host "RDP Address: $env:TAILSCALE_IP:3389"    
+          Write-Host "RDP Username: RDP"    
+          Write-Host "RDP Password: $(echo $env:RDP_CREDS)"
+          Write-Host ""
+          Write-Host "Upload Server: http://$env:TAILSCALE_IP:5000"
+          Write-Host "Upload your ZIP file through the web interface!"
+          Write-Host "========================================`n"    
               
           # Keep runner active indefinitely (or until manually cancelled)    
           while ($true) {    
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"    
+              Write-Host "[$(Get-Date)] RDP & Upload Server Active - Use Ctrl+C in workflow to terminate"    
               Start-Sleep -Seconds 300    
           }
